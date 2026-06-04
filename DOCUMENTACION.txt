@@ -1,0 +1,447 @@
+================================================================
+  SISTEMA DE CONTROL DE ACCESO - SALA DE SISTEMAS
+  Documentación Técnica Completa del Proyecto
+================================================================
+
+VERSIÓN   : 1.0
+TECNOLOGÍA: PHP 8.1+ | MySQL 8.0+ | HTML5/CSS3/JS
+CREADO    : 2025
+ENTORNO   : Servidor Apache/Nginx con PHP y MySQL
+
+
+================================================================
+1. DESCRIPCIÓN GENERAL DEL PROYECTO
+================================================================
+
+El Sistema de Control de Acceso para Sala de Sistemas es una
+aplicación web desarrollada en PHP que permite registrar y
+controlar la entrada y salida de personas (estudiantes y
+profesores) en una sala de cómputo institucional.
+
+El sistema incluye:
+  - Registro de entradas y salidas con timestamp automático.
+  - Registro de la actividad que realizará la persona.
+  - Distinción entre estudiante y profesor.
+  - Panel administrativo completo con CRUD sobre toda la BD.
+  - Reportes especiales con operaciones de álgebra relacional.
+  - Procedimiento almacenado con validaciones de negocio.
+
+
+================================================================
+2. ESTRUCTURA DE ARCHIVOS DEL PROYECTO
+================================================================
+
+sala_sistemas/
+├── index.php                → Redirección al login
+├── login.php                → Página de autenticación
+├── logout.php               → Cierre de sesión
+│
+├── config/
+│   └── database.php         → Configuración PDO / conexión BD
+│
+├── includes/
+│   ├── auth.php             → Funciones de sesión y autenticación
+│   └── sidebar.php          → Menú lateral de navegación (partial)
+│
+├── admin/
+│   ├── dashboard.php        → Panel principal con estadísticas
+│   ├── registro.php         → Formulario de entrada/salida
+│   ├── accesos.php          → Historial y edición de registros
+│   ├── usuarios.php         → CRUD completo de usuarios
+│   ├── actividades.php      → CRUD del catálogo de actividades
+│   └── reportes.php         → Consultas UNIÓN, INTERSECCIÓN, DIFERENCIA
+│
+├── assets/
+│   └── css/
+│       └── style.css        → Hoja de estilos global (tema oscuro tech)
+│
+└── database.sql             → Script SQL completo de la base de datos
+
+
+================================================================
+3. BASE DE DATOS - ESTRUCTURA DE TABLAS
+================================================================
+
+3.1 TABLA: usuarios
+-------------------------------------------------------------
+Almacena la información de todas las personas que pueden
+acceder a la sala (estudiantes y profesores).
+
+COLUMNAS:
+  - id_usuario            INT AUTO_INCREMENT
+  - numero_identificacion VARCHAR(20)  — Cédula o código
+  - nombre                VARCHAR(100)
+  - apellido              VARCHAR(100)
+  - tipo_usuario          ENUM('estudiante','profesor')
+  - programa_facultad     VARCHAR(150) DEFAULT 'No especificado'
+  - email                 VARCHAR(150)
+  - telefono              VARCHAR(20)
+  - estado                ENUM('activo','inactivo') DEFAULT 'activo'
+  - fecha_registro        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+
+3.2 TABLA: actividades_catalogo
+-------------------------------------------------------------
+Catálogo de actividades predefinidas que se pueden asignar
+a un registro de acceso.
+
+COLUMNAS:
+  - id_actividad     INT AUTO_INCREMENT
+  - nombre_actividad VARCHAR(150)
+  - descripcion      TEXT
+  - aplica_para      ENUM('estudiante','profesor','ambos')
+
+
+3.3 TABLA: registros_acceso
+-------------------------------------------------------------
+Registra cada evento de entrada o salida de la sala.
+
+COLUMNAS:
+  - id_registro    INT AUTO_INCREMENT
+  - id_usuario     INT (FK → usuarios.id_usuario)
+  - id_actividad   INT (FK → actividades_catalogo.id_actividad)
+  - tipo_movimiento ENUM('entrada','salida')
+  - fecha_hora     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  - observaciones  TEXT
+  - equipo_asignado VARCHAR(50)
+  - registrado_por VARCHAR(100)
+
+
+3.4 TABLA: administradores
+-------------------------------------------------------------
+Usuarios con acceso al panel de administración.
+
+COLUMNAS:
+  - id_admin       INT AUTO_INCREMENT
+  - username       VARCHAR(50) UNIQUE
+  - password_hash  VARCHAR(255) — Contraseña hasheada con bcrypt
+  - nombre_completo VARCHAR(200)
+  - email          VARCHAR(150)
+  - ultimo_acceso  TIMESTAMP
+
+
+================================================================
+4. RESTRICCIONES IMPLEMENTADAS EN LA BASE DE DATOS
+================================================================
+
+Se implementaron 5 restricciones de integridad, como se solicitó:
+
+RESTRICCIÓN 1 — PRIMARY KEY
+  Aplicada en: TODAS las tablas (id_usuario, id_actividad,
+  id_registro, id_admin).
+  Ejemplo: CONSTRAINT pk_usuarios PRIMARY KEY (id_usuario)
+  Propósito: Garantizar unicidad e identificación de cada fila.
+
+RESTRICCIÓN 2 — NOT NULL
+  Aplicada en: numero_identificacion, nombre, apellido,
+  tipo_usuario, id_usuario (FK), id_actividad (FK), tipo_movimiento,
+  username, password_hash, nombre_completo, email (admins).
+  Propósito: Evitar registros incompletos con campos vacíos.
+
+RESTRICCIÓN 3 — UNIQUE
+  Aplicada en: usuarios.numero_identificacion
+  (CONSTRAINT uq_identificacion UNIQUE)
+  y administradores.username (UNIQUE inline).
+  Propósito: No puede existir dos personas con el mismo número
+  de identificación, ni dos administradores con el mismo usuario.
+
+RESTRICCIÓN 4 — CHECK (implícita vía ENUM)
+  Aplicada en: tipo_usuario ENUM('estudiante','profesor'),
+  tipo_movimiento ENUM('entrada','salida'),
+  estado ENUM('activo','inactivo'),
+  aplica_para ENUM('estudiante','profesor','ambos').
+  Propósito: Solo se aceptan valores del dominio definido,
+  equivalente semántico a un CHECK constraint.
+
+RESTRICCIÓN 5 — DEFAULT
+  Aplicada en: programa_facultad DEFAULT 'No especificado',
+  estado DEFAULT 'activo', fecha_registro DEFAULT CURRENT_TIMESTAMP,
+  registrado_por DEFAULT 'Sistema'.
+  Propósito: Valores automáticos cuando no se especifica el campo.
+
+RESTRICCIÓN ADICIONAL — FOREIGN KEY
+  registros_acceso.id_usuario → usuarios.id_usuario
+    ON DELETE RESTRICT ON UPDATE CASCADE
+  registros_acceso.id_actividad → actividades_catalogo.id_actividad
+    ON DELETE RESTRICT ON UPDATE CASCADE
+  Propósito: Integridad referencial; no se puede registrar un
+  acceso para un usuario o actividad inexistentes.
+
+
+================================================================
+5. PROCEDIMIENTO ALMACENADO
+================================================================
+
+NOMBRE: sp_registrar_acceso
+
+PARÁMETROS DE ENTRADA:
+  p_id_usuario      INT      — ID del usuario
+  p_id_actividad    INT      — ID de la actividad
+  p_tipo_movimiento VARCHAR  — 'entrada' o 'salida'
+  p_observaciones   TEXT     — Notas opcionales
+  p_equipo          VARCHAR  — Equipo/PC asignado
+
+PARÁMETRO DE SALIDA:
+  p_resultado       VARCHAR  — Mensaje resultado de la operación
+
+LÓGICA INTERNA:
+  1. Verifica que el usuario exista en la tabla usuarios.
+  2. Verifica que el usuario tenga estado = 'activo'.
+  3. Verifica que la actividad aplique para el tipo de usuario
+     (estudiante no puede registrar una actividad solo de profesor).
+  4. Revisa el último movimiento del usuario para detectar
+     inconsistencias (dos entradas seguidas, salida sin entrada).
+  5. Inserta el registro en registros_acceso.
+  6. Devuelve un mensaje con el resultado: OK, ADVERTENCIA o ERROR.
+
+RETORNOS POSIBLES:
+  "OK: Registro exitoso."
+  "ADVERTENCIA: Se registra entrada aunque el último movimiento
+   también fue entrada. Registro guardado."
+  "ERROR: Usuario no encontrado en el sistema."
+  "ERROR: El usuario se encuentra inactivo."
+  "ERROR: La actividad no aplica para el tipo de usuario."
+
+USO EN PHP (admin/registro.php):
+  $stmt = $db->prepare("CALL sp_registrar_acceso(?,?,?,?,?,@p_resultado)");
+  $stmt->execute([$idUsuario, $idActividad, $movimiento, $obs, $equipo]);
+  $resultado = $db->query("SELECT @p_resultado AS res")->fetch()['res'];
+
+
+================================================================
+6. CONSULTAS ESPECIALES — ÁLGEBRA RELACIONAL
+================================================================
+
+Todas visibles y ejecutables en: admin/reportes.php
+
+-------------------------------------------------------------
+A. UNIÓN (UNION)
+-------------------------------------------------------------
+OBJETIVO: Obtener todos los usuarios (de cualquier tipo) que
+han registrado al menos un acceso, en un solo resultado.
+
+SQL:
+  SELECT nombre, apellido, 'Estudiante', programa_facultad,
+         COUNT(*) AS total_accesos
+  FROM usuarios JOIN registros_acceso ...
+  WHERE tipo_usuario = 'estudiante'
+  GROUP BY id_usuario
+
+  UNION
+
+  SELECT nombre, apellido, 'Profesor', programa_facultad,
+         COUNT(*) AS total_accesos
+  FROM usuarios JOIN registros_acceso ...
+  WHERE tipo_usuario = 'profesor'
+  GROUP BY id_usuario
+
+  ORDER BY tipo_label, apellido
+
+RESULTADO: Listado unificado de estudiantes y profesores activos
+en la sala. El UNION elimina duplicados entre los dos conjuntos.
+
+
+-------------------------------------------------------------
+B. INTERSECCIÓN (simulada con IN doble)
+-------------------------------------------------------------
+OBJETIVO: Encontrar usuarios que poseen TANTO registros de
+'entrada' COMO registros de 'salida' (ciclo completo).
+
+MySQL no tiene INTERSECT nativo. Se simula así:
+
+SQL:
+  SELECT DISTINCT u.*
+  FROM usuarios u
+  WHERE u.id_usuario IN (
+      SELECT id_usuario FROM registros_acceso
+      WHERE tipo_movimiento = 'entrada'
+  )
+  AND u.id_usuario IN (
+      SELECT id_usuario FROM registros_acceso
+      WHERE tipo_movimiento = 'salida'
+  )
+
+EQUIVALENCIA: Esto es semánticamente idéntico a:
+  {usuarios con entradas} ∩ {usuarios con salidas}
+
+RESULTADO: Solo aparecen personas que están en AMBOS conjuntos.
+
+
+-------------------------------------------------------------
+C. DIFERENCIA (simulada con NOT IN)
+-------------------------------------------------------------
+OBJETIVO: Encontrar usuarios registrados en el sistema que
+NUNCA han aparecido en ningún registro de acceso.
+
+MySQL no tiene EXCEPT nativo. Se simula así:
+
+SQL:
+  SELECT u.*
+  FROM usuarios u
+  WHERE u.id_usuario NOT IN (
+      SELECT DISTINCT id_usuario FROM registros_acceso
+  )
+
+EQUIVALENCIA: Esto es semánticamente idéntico a:
+  {todos los usuarios} − {usuarios con algún acceso}
+
+RESULTADO: Personas inscritas en el sistema pero que jamás han
+entrado ni salido de la sala. Útil para detectar usuarios inactivos.
+
+
+================================================================
+7. FUNCIONALIDADES DEL PANEL ADMINISTRATIVO
+================================================================
+
+7.1 LOGIN (login.php)
+  - Autenticación con username y password.
+  - Contraseña almacenada con hash bcrypt (password_hash).
+  - Credenciales por defecto: admin / admin123
+  - Redirección automática si ya hay sesión activa.
+
+7.2 DASHBOARD (admin/dashboard.php)
+  - Estadísticas en tiempo real: total usuarios, estudiantes,
+    profesores, y personas actualmente dentro de la sala.
+  - Tabla con los 10 últimos movimientos registrados.
+
+7.3 REGISTRAR ACCESO (admin/registro.php)
+  - Formulario principal del sistema.
+  - Llama al procedimiento almacenado sp_registrar_acceso.
+  - Muestra el mensaje devuelto por el procedimiento (OK/ADVERTENCIA/ERROR).
+  - Permite seleccionar usuario, tipo de movimiento, actividad,
+    equipo asignado y observaciones.
+
+7.4 HISTORIAL DE ACCESOS (admin/accesos.php)
+  - Lista todos los registros con filtros por:
+    · Nombre/apellido/identificación (búsqueda textual)
+    · Tipo de usuario (estudiante / profesor)
+    · Tipo de movimiento (entrada / salida)
+    · Rango de fechas (desde / hasta)
+  - Edición en modal (todos los campos editables).
+  - Eliminación con confirmación.
+
+7.5 GESTIÓN DE USUARIOS (admin/usuarios.php)
+  - Tabla con todos los usuarios y contador de accesos.
+  - Crear nuevos usuarios desde modal.
+  - Editar cualquier campo desde modal.
+  - Eliminar usuario (con restricción si tiene registros asociados).
+
+7.6 CATÁLOGO DE ACTIVIDADES (admin/actividades.php)
+  - CRUD completo sobre las actividades disponibles.
+  - Indicador de cuántas veces se ha usado cada actividad.
+  - Configuración de a quién aplica (estudiante/profesor/ambos).
+
+7.7 REPORTES SQL (admin/reportes.php)
+  - Muestra el SQL de cada consulta de forma visible.
+  - Ejecuta y muestra resultados en tiempo real.
+  - Explica el propósito de cada operación relacional.
+
+
+================================================================
+8. TECNOLOGÍAS Y DEPENDENCIAS
+================================================================
+
+BACKEND:
+  - PHP 8.1+ con PDO para consultas preparadas.
+  - MySQL 8.0+ (compatible con MariaDB 10.6+).
+  - Sesiones PHP nativas para autenticación.
+  - password_hash / password_verify para seguridad de contraseñas.
+
+FRONTEND:
+  - HTML5 semántico.
+  - CSS3 personalizado con variables CSS (no depende de Bootstrap).
+  - JavaScript vanilla para modales y confirmaciones.
+  - Google Fonts: Sora + JetBrains Mono (vía CDN).
+
+SERVIDOR:
+  - Apache 2.4+ o Nginx 1.18+
+  - PHP-FPM o mod_php
+  - XAMPP / WAMP / MAMP válidos para desarrollo local.
+
+
+================================================================
+9. INSTALACIÓN Y CONFIGURACIÓN
+================================================================
+
+PASO 1: Importar base de datos
+  - Abrir phpMyAdmin o cliente MySQL.
+  - Crear base de datos: sala_sistemas
+  - Ejecutar el archivo database.sql completo.
+
+PASO 2: Configurar conexión
+  - Abrir config/database.php
+  - Ajustar: DB_HOST, DB_USER, DB_PASS según tu servidor.
+  - Por defecto: host=localhost, user=root, pass='' (XAMPP).
+
+PASO 3: Desplegar archivos
+  - Copiar la carpeta sala_sistemas/ al directorio raíz del servidor.
+    · XAMPP: C:\xampp\htdocs\sala_sistemas\
+    · Linux:  /var/www/html/sala_sistemas/
+
+PASO 4: Acceder al sistema
+  - URL: http://localhost/sala_sistemas/
+  - Usuario: admin
+  - Contraseña: admin123
+
+PASO 5: (Recomendado) Cambiar contraseña de administrador
+  - En MySQL ejecutar:
+    UPDATE administradores
+    SET password_hash = '$2y$10$...' -- hash generado con PHP
+    WHERE username = 'admin';
+  - O crear un nuevo admin desde la base de datos.
+
+
+================================================================
+10. SEGURIDAD IMPLEMENTADA
+================================================================
+
+  - Todas las consultas usan sentencias preparadas (PDO) para
+    prevenir inyección SQL.
+  - Las contraseñas se almacenan con bcrypt (costo 10).
+  - Todas las páginas del admin verifican sesión activa.
+  - htmlspecialchars() en todos los outputs para prevenir XSS.
+  - Las claves foráneas con ON DELETE RESTRICT protegen la
+    integridad referencial.
+
+
+================================================================
+11. USUARIO ADMINISTRADOR POR DEFECTO
+================================================================
+
+  Username : admin
+  Password : admin123
+
+  ⚠ IMPORTANTE: Cambiar esta contraseña en producción.
+
+
+================================================================
+12. NOTAS ACADÉMICAS PARA SUSTENTACIÓN
+================================================================
+
+12.1 ¿Por qué simular INTERSECT y EXCEPT con IN / NOT IN?
+  MySQL 5.x y 8.0 (hasta versiones recientes) no implementan
+  las palabras clave INTERSECT y EXCEPT del estándar SQL:2003.
+  La simulación con IN/NOT IN es completamente equivalente en
+  resultado y es la práctica estándar en MySQL.
+
+12.2 ¿Dónde está el UNION en el código?
+  Archivo: admin/reportes.php, variable $unionQuery.
+  El SQL se muestra visualmente en la interfaz para facilitar
+  la sustentación.
+
+12.3 ¿Dónde está el procedimiento almacenado?
+  Archivo: database.sql — bloque DELIMITER $$
+  Se invoca desde: admin/registro.php con PDO CALL.
+
+12.4 ¿Dónde están las 5 restricciones?
+  Todas en: database.sql, tabla usuarios (PRIMARY KEY, NOT NULL,
+  UNIQUE, ENUM/CHECK, DEFAULT) y referenciadas en la sección 4
+  de este documento.
+
+12.5 Motor de tablas
+  Todas las tablas usan ENGINE=InnoDB, que es el único motor
+  de MySQL que soporta FOREIGN KEY y transacciones ACID.
+
+================================================================
+  FIN DE DOCUMENTACIÓN
+================================================================
